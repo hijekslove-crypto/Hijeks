@@ -1,0 +1,79 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Unzip project (if uploaded as a single zip file)
+        run: |
+          ZIPFILE=$(find . -maxdepth 1 -iname "*.zip" | head -n 1)
+          if [ -n "$ZIPFILE" ]; then
+            echo "Found $ZIPFILE, extracting..."
+            unzip -o "$ZIPFILE" -d .
+          else
+            echo "No zip file found at repo root, assuming files are already extracted."
+          fi
+          ls -la
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install npm dependencies
+        run: npm install
+
+      - name: Download html2canvas (needed for receipt printing)
+        run: |
+          mkdir -p www/lib
+          curl -sL https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js -o www/lib/html2canvas.min.js
+
+      - name: Add Android platform
+        run: npx cap add android
+
+      - name: Copy custom plugin Java files into the Android project
+        run: |
+          mkdir -p android/app/src/main/java/com/hilltoptailor/app
+          cp android-plugin-src/java/com/hilltoptailor/app/*.java android/app/src/main/java/com/hilltoptailor/app/
+
+      - name: Merge AndroidManifest permissions
+        run: |
+          python3 - << 'EOF'
+          import re
+          manifest_path = "android/app/src/main/AndroidManifest.xml"
+          with open(manifest_path) as f:
+              manifest = f.read()
+          with open("android-plugin-src/AndroidManifest-additions.xml") as f:
+              additions = f.read()
+          if additions.strip() not in manifest:
+              manifest = manifest.replace("<application", additions + "\n    <application", 1)
+              with open(manifest_path, "w") as f:
+                  f.write(manifest)
+          EOF
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Build debug APK
+        working-directory: android
+        run: chmod +x gradlew && ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: hilltop-tailor-app-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
